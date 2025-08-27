@@ -24,6 +24,9 @@ router.get('/oauth/start', authenticateToken, async (req: Request, res: Response
     // Generate OAuth state parameter for security
     const state = CryptoJS.lib.WordArray.random(32).toString();
     
+    // Include user ID in state parameter to associate OAuth callback with user
+    const stateWithUserId = `${state}:${req.user.id}`;
+    
     // Store state in session or temporary storage (in production, use Redis)
     // For now, we'll include it in the redirect URL
     
@@ -60,7 +63,7 @@ router.get('/oauth/start', authenticateToken, async (req: Request, res: Response
     authUrl.searchParams.set('redirect_uri', env.NOTION_REDIRECT_URI);
     authUrl.searchParams.set('response_type', 'code');
     authUrl.searchParams.set('owner', 'user');
-    // authUrl.searchParams.set('state', state);
+    authUrl.searchParams.set('state', stateWithUserId);
     
     console.log('notion authurl =>',authUrl)
     // Add scopes for read and write access
@@ -77,7 +80,7 @@ router.get('/oauth/start', authenticateToken, async (req: Request, res: Response
       ok: true,
       data: {
         authUrl: authUrl.toString(),
-        state,
+        state: stateWithUserId, // Include user ID in state
       },
     });
   } catch (error) {
@@ -93,35 +96,44 @@ router.get('/oauth/start', authenticateToken, async (req: Request, res: Response
  * Notion OAuth callback
  * GET /api/notion/oauth/callback
  */
-router.get('/oauth/callback', authenticateToken, async (req: Request, res: Response) => {
+router.get('/oauth/callback', async (req: Request, res: Response) => {
   try {
-    if (!req.user) {
-      return res.status(401).json({
-        ok: false,
-        error: 'Authentication required',
-      });
-    }
-
+    // For OAuth callback, we need to handle authentication differently
+    // since Notion redirects here without authentication tokens
+    
     const { code, state, error: oauthError } = req.query;
+    
+    // Extract user ID from state parameter
+    const [stateToken, userId] = (state as string)?.split(':') || [];
+    
+    if (!userId) {
+      logger.warn('Notion OAuth callback missing user ID in state parameter');
+      return res.redirect(`${process.env['FRONTEND_URL'] || 'http://localhost:5173'}/settings?error=invalid_state`);
+    }
+    
+    // Log the callback for debugging
+    console.log('🔍 Notion OAuth Callback Received:');
+    console.log('🔍 Code:', code ? '***RECEIVED***' : 'NOT RECEIVED');
+    console.log('🔍 State:', state);
+    console.log('🔍 User ID:', userId);
+    console.log('🔍 Error:', oauthError);
 
     // Check for OAuth errors
     if (oauthError) {
       logger.warn('Notion OAuth error received', {
-        userId: req.user.id,
         error: oauthError,
       });
 
-      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/settings?error=oauth_failed&message=${encodeURIComponent(String(oauthError))}`);
+      return res.redirect(`${process.env['FRONTEND_URL'] || 'http://localhost:5173'}/settings?error=oauth_failed&message=${encodeURIComponent(String(oauthError))}`);
     }
 
     // Validate required parameters
     if (!code || typeof code !== 'string') {
       logger.warn('Notion OAuth callback missing code parameter', {
-        userId: req.user.id,
         query: req.query,
       });
 
-      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/settings?error=missing_code`);
+      return res.redirect(`${process.env['FRONTEND_URL'] || 'http://localhost:5173'}/settings?error=missing_code`);
     }
 
     // Exchange authorization code for access token
@@ -142,23 +154,28 @@ router.get('/oauth/callback', authenticateToken, async (req: Request, res: Respo
     if (!tokenResponse.ok) {
       const errorData = await tokenResponse.text();
       logger.error('Failed to exchange Notion OAuth code for token', {
-        userId: req.user.id,
         status: tokenResponse.status,
         error: errorData,
       });
 
-      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/settings?error=token_exchange_failed`);
+      return res.redirect(`${process.env['FRONTEND_URL'] || 'http://localhost:5173'}/settings?error=token_exchange_failed`);
     }
 
     const tokenData = await tokenResponse.json();
     const { access_token, refresh_token, workspace_id, workspace_name, owner } = tokenData;
+
+    // For now, we'll store the token without user association
+    // In production, you'd want to associate this with the user who initiated the OAuth flow
+    console.log('🔍 Token Exchange Successful:');
+    console.log('🔍 Workspace Name:', workspace_name);
+    console.log('🔍 Workspace ID:', workspace_id);
 
     // Encrypt the access token before storing
     const encryptedAccessToken = CryptoJS.AES.encrypt(access_token, env.ENCRYPTION_KEY).toString();
     const encryptedRefreshToken = refresh_token ? CryptoJS.AES.encrypt(refresh_token, env.ENCRYPTION_KEY).toString() : undefined;
 
     // Store the encrypted tokens in the database
-    const integrationResult = await IntegrationsRepository.upsertNotionToken(req.user.id, {
+    const integrationResult = await IntegrationsRepository.upsertNotionToken(userId, {
       accessToken: encryptedAccessToken,
       refreshToken: encryptedRefreshToken,
       workspaceName: workspace_name,
@@ -168,39 +185,18 @@ router.get('/oauth/callback', authenticateToken, async (req: Request, res: Respo
 
     if (integrationResult.error) {
       logger.error('Failed to store Notion integration:', {
-        userId: req.user.id,
         error: integrationResult.error,
       });
 
-      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/settings?error=storage_failed`);
-    }
-
-    // Fetch additional workspace information if available
-    if (access_token && workspace_id) {
-      try {
-        const notion = new Client({ auth: access_token });
-        const workspace = await notion.users.me();
-        
-        logger.info('Notion OAuth completed successfully', {
-          userId: req.user.id,
-          workspaceId: workspace_id,
-          workspaceName: workspace_name,
-          ownerId: workspace.id,
-        });
-      } catch (workspaceError) {
-        logger.warn('Failed to fetch Notion workspace info, but OAuth was successful', {
-          userId: req.user.id,
-          error: workspaceError,
-        });
-      }
+      return res.redirect(`${process.env['FRONTEND_URL'] || 'http://localhost:5173'}/settings?error=storage_failed`);
     }
 
     // Redirect back to frontend with success
-          res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/settings?connected=notion&workspace=${encodeURIComponent(workspace_name || 'Unknown')}`);
+    res.redirect(`${process.env['FRONTEND_URL'] || 'http://localhost:5173'}/settings?connected=notion&workspace=${encodeURIComponent(workspace_name || 'Unknown')}`);
 
   } catch (error) {
     logger.error('Unexpected error in Notion OAuth callback:', error);
-          res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/settings?error=unexpected_error`);
+    res.redirect(`${process.env['FRONTEND_URL'] || 'http://localhost:5173'}/settings?error=unexpected_error`);
   }
 });
 

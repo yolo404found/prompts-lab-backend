@@ -61,8 +61,11 @@ type TemplateFilters = z.infer<typeof TemplateFiltersSchema>;
  */
 router.get('/', optionalAuth, async (req: Request, res: Response) => {
   try {
-    // Parse and validate query parameters
-    const filters: TemplateFilters = {};
+    // Parse and validate query parameters with defaults
+    const filters: TemplateFilters = {
+      limit: 20,
+      offset: 0,
+    };
     
     if (req.query.category) filters.category = String(req.query.category);
     if (req.query.tags) {
@@ -77,7 +80,11 @@ router.get('/', optionalAuth, async (req: Request, res: Response) => {
 
     // If user is authenticated, show both public and their own templates
     if (req.user) {
+      console.log('🔍 Fetching templates for user:', req.user.id);
+      console.log('🔍 Filters:', filters);
+      
       const result = await TemplatesRepository.getByUserId(req.user.id, filters);
+      console.log('🔍 User templates result:', { data: result.data?.length || 0, error: result.error });
       
       if (result.error) {
         return res.status(500).json({
@@ -88,6 +95,7 @@ router.get('/', optionalAuth, async (req: Request, res: Response) => {
 
       // Also get public templates
       const publicResult = await TemplatesRepository.listPublic(filters);
+      console.log('🔍 Public templates result:', { data: publicResult.data?.length || 0, total: publicResult.total, error: publicResult.error });
       
       if (publicResult.error) {
         return res.status(500).json({
@@ -98,6 +106,8 @@ router.get('/', optionalAuth, async (req: Request, res: Response) => {
 
       // Combine and deduplicate templates
       const allTemplates = [...result.data, ...publicResult.data];
+      console.log('🔍 Combined templates before dedup:', allTemplates.length);
+      
       const uniqueTemplates = allTemplates.filter((template, index, self) => 
         index === self.findIndex(t => t.id === template.id)
       );
@@ -623,8 +633,11 @@ router.get('/my', authenticateToken, async (req: Request, res: Response) => {
       });
     }
 
-    // Parse and validate query parameters
-    const filters: TemplateFilters = {};
+    // Parse and validate query parameters with defaults
+    const filters: TemplateFilters = {
+      limit: 20,
+      offset: 0,
+    };
     
     if (req.query.category) filters.category = String(req.query.category);
     if (req.query.tags) {

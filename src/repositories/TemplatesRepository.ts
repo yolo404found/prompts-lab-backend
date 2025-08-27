@@ -47,6 +47,8 @@ export class TemplatesRepository {
    */
   static async listPublic(filters: TemplateFilters = {}): Promise<{ data: Template[]; total: number; error?: string }> {
     try {
+      console.log('🔍 listPublic called with filters:', filters);
+      
       let query = supabase
         .from('templates')
         .select('*', { count: 'exact' })
@@ -60,9 +62,13 @@ export class TemplatesRepository {
         query = query.overlaps('tags', filters.tags);
       }
 
+      console.log('🔍 About to execute query with range:', filters.offset, 'to', filters.offset + filters.limit - 1);
+      
       const { data, error, count } = await query
         .range(filters.offset, filters.offset + filters.limit - 1)
         .order('created_at', { ascending: false });
+
+      console.log('🔍 Query result:', { dataLength: data?.length || 0, count, error: error?.message });
 
       if (error) {
         logger.error('Error listing public templates:', error);
@@ -281,6 +287,8 @@ export class TemplatesRepository {
    */
   static async getByUserId(userId: string, filters: TemplateFilters = {}): Promise<{ data: Template[]; total: number; error?: string }> {
     try {
+      console.log('🔍 getByUserId called with userId:', userId, 'filters:', filters);
+      
       let query = supabase
         .from('templates')
         .select('*', { count: 'exact' })
@@ -294,9 +302,13 @@ export class TemplatesRepository {
         query = query.overlaps('tags', filters.tags);
       }
 
+      console.log('🔍 About to execute getByUserId query with range:', filters.offset, 'to', filters.offset + filters.limit - 1);
+      
       const { data, error, count } = await query
         .range(filters.offset, filters.offset + filters.limit - 1)
         .order('created_at', { ascending: false });
+
+      console.log('🔍 getByUserId query result:', { dataLength: data?.length || 0, count, error: error?.message });
 
       if (error) {
         logger.error('Error getting templates by user ID:', error);
